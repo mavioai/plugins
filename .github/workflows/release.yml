@@ -1,0 +1,57 @@
+name: Release
+
+# Publishes Mavio's first-party plugins and their catalog.json as a release
+# of this repository, built by tools/plugindist from the source of a release
+# of mavioai/mavio. Servers install from the catalog of the latest release:
+# https://github.com/mavioai/plugins/releases/latest/download/catalog.json
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The tag of the mavioai/mavio release to build, such as v0.1.0; empty for its latest release
+        required: false
+  repository_dispatch:
+    types: [mavio-release]
+
+permissions:
+  contents: write
+
+env:
+  MISE_DISABLE_TOOLS: github:jellyfin/jellyfin-ffmpeg,http:rclone,java,gradle
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version || github.event.client_payload.version }}
+        run: |
+          if [ -z "$VERSION" ]; then
+            VERSION=$(gh release view --repo mavioai/mavio --json tagName --jq .tagName)
+          fi
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$VERSION is already released"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: mavioai/mavio
+          ref: ${{ steps.version.outputs.version }}
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+      - name: Package the plugins for every platform
+        working-directory: tools/plugindist
+        run: go run ./cmd/plugindist -out dist
+      - name: Publish the release
+        working-directory: tools/plugindist/dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ls -l
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "Plugins of Mavio $VERSION" \
+            --notes "Mavio's first-party plugins, built from mavioai/mavio $VERSION." ./*
